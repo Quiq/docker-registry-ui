@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/CloudyKit/jet"
 	"github.com/labstack/echo/v4"
@@ -52,6 +53,11 @@ type apiClient struct {
 	eventListener *events.EventListener
 	config        configData
 }
+
+var tagDates = struct {
+	sync.RWMutex
+	created map[string]string
+}{ created: make(map[string]string)}
 
 func main() {
 	var (
@@ -196,12 +202,27 @@ func (a *apiClient) viewTags(c echo.Context) error {
 	}
 
 	tags := a.client.Tags(repoPath)
+	go func(tags []string) {
+		for _, tag := range tags {
+			tagDates.RLock()
+			_, exists := tagDates.created[tag]
+			tagDates.RUnlock()
+			if !exists {
+				tagDates.Lock()
+				tagDates.created[tag] = a.client.TagInfoCreated(repoPath, tag)
+				tagDates.Unlock()
+			}
+		}
+	}(tags)
 	deleteAllowed := a.checkDeletePermission(c.Request().Header.Get("X-WEBAUTH-USER"))
 
 	data := jet.VarMap{}
 	data.Set("namespace", namespace)
 	data.Set("repo", repo)
 	data.Set("tags", tags)
+	tagDates.RLock()
+	data.Set("tagCreated", tagDates.created)
+	tagDates.RUnlock()
 	data.Set("deleteAllowed", deleteAllowed)
 	repoPath, _ = url.PathUnescape(repoPath)
 	data.Set("events", a.eventListener.GetEvents(repoPath))
